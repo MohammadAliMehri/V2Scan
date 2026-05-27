@@ -214,3 +214,6 @@ python v2_all_in_one.py pipeline --help
 | All configs dead (delay) | Check sing-box/curl, try a different `--probe`, or lower `--parallel` |
 
 Press **Ctrl+C** to stop any running command or the web server.
+
+---
+## ⁉️ Any unauthorized use is at your own responsibility.
