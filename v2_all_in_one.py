@@ -2,14 +2,18 @@
 """
 V2Ray All-in-One Tools
 ======================
-Combines three tools into one script:
+Combines tools into one script:
 
+  fetch     Fetch free public V2Ray configs from GitHub repos
+  scan      Fetch + deduplicate + delay-test in one command
   iran      Check proxy hosts against linkirani.ir (Iran-registered hosts)
   delay     Test config latency with sing-box + curl (CLI dashboard)
   web       Start the V2Ray Checker PRO web UI
   pipeline  Run iran check, then delay test on matched configs
 
 Examples:
+  python v2_all_in_one.py fetch --out public.txt
+  python v2_all_in_one.py scan --parallel 5
   python v2_all_in_one.py iran -i configs.txt
   python v2_all_in_one.py delay -i configs.txt --parallel 5
   python v2_all_in_one.py web --port 8686
@@ -65,8 +69,29 @@ console = Console()
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROXY_PREFIXES = ("vless://", "vmess://", "trojan://", "ss://")
+HYSTERIA_PREFIXES = ("hy2://", "hysteria2://")
+ALL_PREFIXES = PROXY_PREFIXES + HYSTERIA_PREFIXES
 IRAN_API_URL = "https://api.linkirani.ir/shortlink"
 DEFAULT_PROBE = "https://www.google.com/generate_204"
+
+# Well-known GitHub repos that publish free V2Ray/proxy configs
+# Format: (raw_url_template, description)
+GITHUB_CONFIG_SOURCES = [
+    ("https://raw.githubusercontent.com/barry-far/V2ray-config/main/All_Configs_Sub.txt",
+     "barry-far/V2ray-config (aggregated subs)"),
+    ("https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray",
+     "mfuu/v2ray (daily updated)"),
+    ("https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt",
+     "peasoft/NoMoreWalls (aggregated)"),
+    ("https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt",
+     "mahdibland/V2RayAggregator"),
+    ("https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt",
+     "Epodonios/v2ray-configs"),
+    ("https://raw.githubusercontent.com/freefq/free/master/v2",
+     "freefq/free (free servers)"),
+    ("https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub",
+     "Pawdroid/Free-servers"),
+]
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
@@ -130,7 +155,7 @@ def get_protocol_emoji(link: str) -> str:
 
 def read_proxy_links(path: str) -> List[str]:
     with open(path, encoding="utf-8", errors="ignore") as f:
-        return [line.strip() for line in f if line.strip().startswith(PROXY_PREFIXES)]
+        return [line.strip() for line in f if line.strip().startswith(ALL_PREFIXES)]
 
 
 def random_headers() -> Dict[str, str]:
@@ -457,6 +482,136 @@ async def test_one_delay(
             except Exception:
                 pass
         return False, 0, link
+
+
+# ─── GitHub config fetcher ──────────────────────────────────────────────────
+
+def _try_decode_base64_content(raw: str) -> str:
+    """If the content looks base64-encoded (subscription format), decode it."""
+    stripped = raw.strip()
+    # Quick heuristic: if no proxy prefix found, try base64 decode
+    if not any(stripped.startswith(p) for p in ALL_PREFIXES) and not any(
+        p in stripped[:5000] for p in ALL_PREFIXES
+    ):
+        try:
+            decoded = base64.b64decode(stripped + "==").decode("utf-8", errors="ignore")
+            if any(p in decoded for p in ALL_PREFIXES):
+                return decoded
+        except Exception:
+            pass
+    return raw
+
+
+def _parse_configs_from_text(raw: str) -> List[str]:
+    """Extract valid proxy links from raw text, handling base64 subscriptions."""
+    raw = _try_decode_base64_content(raw)
+    lines = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if line.startswith(ALL_PREFIXES):
+            # Strip trailing whitespace and comments after the fragment
+            lines.append(line)
+    return lines
+
+
+async def fetch_from_github(
+    sources: List[Tuple[str, str]],
+    timeout: int = 20,
+) -> Tuple[List[str], Dict[str, int], List[str]]:
+    """
+    Fetch configs from multiple GitHub raw URLs concurrently.
+    Returns (all_links, source_counts, errors).
+    """
+    _ensure_deps("httpx")
+    import httpx
+
+    all_links: List[str] = []
+    source_counts: Dict[str, int] = {}
+    errors: List[str] = []
+
+    async def fetch_one(url: str, desc: str):
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                follow_redirects=True,
+                limits=httpx.Limits(max_connections=10),
+            ) as client:
+                resp = await client.get(url, headers={"User-Agent": "V2Scan/2.0"})
+                if resp.status_code == 200:
+                    configs = _parse_configs_from_text(resp.text)
+                    all_links.extend(configs)
+                    source_counts[desc] = len(configs)
+                    return len(configs)
+                else:
+                    errors.append(f"{desc}: HTTP {resp.status_code}")
+                    return 0
+        except Exception as exc:
+            errors.append(f"{desc}: {exc}")
+            return 0
+
+    tasks = [fetch_one(url, desc) for url, desc in sources]
+    await asyncio.gather(*tasks)
+    return all_links, source_counts, errors
+
+
+async def run_fetch(args: argparse.Namespace) -> int:
+    """Fetch free public V2Ray configs from GitHub repos."""
+    console.print(Panel.fit("[bold cyan]GitHub Config Fetcher[/bold cyan]", border_style="blue"))
+
+    sources = GITHUB_CONFIG_SOURCES
+    if args.sources:
+        # Custom URLs passed by user
+        sources = [(url, url.split("/")[-1]) for url in args.sources]
+
+    info = Table(show_header=False, show_edge=False)
+    info.add_column("", style="cyan")
+    info.add_column("", style="white")
+    info.add_row("Sources", str(len(sources)))
+    info.add_row("Timeout", f"{args.timeout}s")
+    info.add_row("Output", args.out)
+    console.print(Panel(info, title="Configuration", border_style="green"))
+
+    console.print("\n[cyan]Fetching configs from GitHub...[/cyan]\n")
+
+    all_links, source_counts, errors = await fetch_from_github(sources, timeout=args.timeout)
+
+    # Show per-source results
+    results_table = Table(title="Fetch Results", expand=True)
+    results_table.add_column("Source", style="cyan", ratio=3)
+    results_table.add_column("Configs", style="white", justify="right")
+    for desc, count in sorted(source_counts.items(), key=lambda x: -x[1]):
+        results_table.add_row(desc, str(count))
+    for err in errors:
+        results_table.add_row(f"[red]{err}[/red]", "[red]FAILED[/red]")
+    console.print(results_table)
+
+    if not all_links:
+        console.print("[red]No configs fetched from any source[/red]")
+        return 1
+
+    # Deduplicate
+    unique, dup_count = remove_duplicates(all_links)
+
+    # Protocol breakdown
+    proto_counts = defaultdict(int)
+    for link in unique:
+        proto_counts[get_protocol(link)] += 1
+
+    console.print(f"\n[bold]Total fetched: {len(all_links)} | Unique: {len(unique)} | Duplicates: {dup_count}[/bold]")
+    proto_line = " | ".join(
+        f"{get_protocol_emoji(p + '://')} {p.upper()}: {c}"
+        for p, c in sorted(proto_counts.items(), key=lambda x: -x[1])
+    )
+    console.print(f"   {proto_line}")
+
+    # Save
+    unique.sort(key=lambda x: (PROTOCOL_ORDER.get(get_protocol(x), 4), x))
+    with open(args.out, "w", encoding="utf-8") as f:
+        f.write("\n".join(unique))
+    console.print(f"\n[green]Saved {len(unique)} unique configs → {args.out}[/green]")
+    if errors:
+        console.print(f"[yellow]Warnings: {len(errors)} source(s) failed[/yellow]")
+    return 0
 
 
 # ─── Iran host checker ──────────────────────────────────────────────────────
@@ -1158,6 +1313,8 @@ class V2CheckerHandler(http.server.BaseHTTPRequestHandler):
             self.handle_cancel(body)
         elif path == "/api/fetch-url":
             self.handle_fetch_url(body)
+        elif path == "/api/fetch-github":
+            self.handle_fetch_github(body)
         else:
             self.send_response(404)
             self.end_headers()
@@ -1325,6 +1482,37 @@ class V2CheckerHandler(http.server.BaseHTTPRequestHandler):
         ]
         self.send_json({"configs": "\n".join(lines), "count": len(lines)})
 
+    def handle_fetch_github(self, body):
+        """Fetch configs from GitHub sources and return them."""
+        try:
+            data = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            data = {}
+
+        timeout = data.get("timeout", 20)
+        sources = GITHUB_CONFIG_SOURCES
+
+        try:
+            loop = asyncio.new_event_loop()
+            all_links, source_counts, errors = loop.run_until_complete(
+                fetch_from_github(sources, timeout=timeout)
+            )
+            loop.close()
+        except Exception as exc:
+            self.send_json({"error": f"Fetch failed: {exc}"}, 500)
+            return
+
+        unique, dup_count = remove_duplicates(all_links)
+        configs_text = "\n".join(unique)
+        self.send_json({
+            "configs": configs_text,
+            "count": len(unique),
+            "total_fetched": len(all_links),
+            "duplicates": dup_count,
+            "sources": source_counts,
+            "errors": errors,
+        })
+
     def serve_html(self):
         html_path = os.path.join(SCRIPT_DIR, "index.html")
         try:
@@ -1353,6 +1541,94 @@ def run_web_ui(args: argparse.Namespace) -> int:
         console.print("\n[red]Server stopped.[/red]")
         server.server_close()
     return 0
+
+
+# ─── Scan (fetch + delay in one go) ─────────────────────────────────────────
+
+async def run_scan(args: argparse.Namespace) -> int:
+    """Fetch configs from GitHub, deduplicate, then delay-test them."""
+    console.print(Panel("[bold cyan]Full Scan: Fetch → Dedup → Delay Test[/bold cyan]", border_style="blue"))
+
+    # Step 1: Fetch
+    sources = GITHUB_CONFIG_SOURCES
+    console.print("\n[bold]Step 1/2: Fetching configs from GitHub...[/bold]")
+    all_links, source_counts, errors = await fetch_from_github(sources, timeout=args.timeout)
+
+    # Merge with local file if provided
+    if args.input and os.path.exists(args.input):
+        local = read_proxy_links(args.input)
+        if local:
+            all_links.extend(local)
+            console.print(f"   Merged {len(local)} configs from {args.input}")
+
+    if not all_links:
+        console.print("[red]No configs fetched from any source[/red]")
+        return 1
+
+    unique, dup_count = remove_duplicates(all_links)
+
+    # Filter to delay-testable protocols (vless/vmess/trojan)
+    testable = [l for l in unique if l.startswith(("vless://", "vmess://", "trojan://"))]
+    skipped = len(unique) - len(testable)
+
+    proto_counts = defaultdict(int)
+    for link in unique:
+        proto_counts[get_protocol(link)] += 1
+
+    console.print(f"   Total fetched: {len(all_links)} | Unique: {len(unique)} | Duplicates: {dup_count}")
+    proto_line = " | ".join(
+        f"{get_protocol_emoji(p + '://')} {p.upper()}: {c}"
+        for p, c in sorted(proto_counts.items(), key=lambda x: -x[1])
+    )
+    console.print(f"   {proto_line}")
+    console.print(f"   Testable (vless/vmess/trojan): {len(testable)} | Skipped (ss/hy2): {skipped}")
+
+    if errors:
+        console.print(f"   [yellow]Source warnings: {len(errors)}[/yellow]")
+
+    if not testable:
+        console.print("[red]No testable configs (need vless/vmess/trojan)[/red]")
+        return 1
+
+    # Save fetched configs
+    fetch_out = args.fetch_out
+    unique.sort(key=lambda x: (PROTOCOL_ORDER.get(get_protocol(x), 4), x))
+    with open(fetch_out, "w", encoding="utf-8") as f:
+        f.write("\n".join(unique))
+    console.print(f"   Saved all unique → [cyan]{fetch_out}[/cyan]")
+
+    # Step 2: Delay test
+    if not await ensure_singbox(args.singbox):
+        console.print(f"[red]❌ sing-box not found: {args.singbox}[/red]")
+        console.print("[yellow]Configs were fetched but delay test skipped.[/yellow]")
+        return 1
+
+    console.print(f"\n[bold]Step 2/2: Delay testing {len(testable)} configs...[/bold]")
+    delay_args = argparse.Namespace(
+        input=fetch_out,  # We'll filter in run_delay_checker
+        singbox=args.singbox,
+        parallel=args.parallel,
+        timeout=args.timeout,
+        startup_wait=args.startup_wait,
+        probe=args.probe,
+        out=args.out,
+    )
+
+    # Write testable to temp file for delay checker
+    import tempfile as _tmp
+    with _tmp.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tf:
+        tf.write("\n".join(testable))
+        temp_path = tf.name
+
+    delay_args.input = temp_path
+    try:
+        result = await run_delay_checker(delay_args)
+    finally:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+    return result
 
 
 # ─── Pipeline (iran → delay) ────────────────────────────────────────────────
@@ -1406,6 +1682,21 @@ def build_parser() -> argparse.ArgumentParser:
     iran.add_argument("--keep-duplicates", action="store_true", help="Keep duplicate configs")
     iran.add_argument("--retry", type=int, default=3, help="Retry attempts per host (default: 3)")
 
+    fetch = subparsers.add_parser("fetch", help="Fetch free public V2Ray configs from GitHub")
+    fetch.add_argument("--out", default="fetched_public.txt", help="Output file (default: fetched_public.txt)")
+    fetch.add_argument("--sources", nargs="*", help="Custom raw GitHub URLs (overrides built-in list)")
+    fetch.add_argument("--timeout", type=int, default=20, help="HTTP timeout per source in seconds")
+
+    scan = subparsers.add_parser("scan", help="Fetch from GitHub + deduplicate + delay-test (all-in-one)")
+    scan.add_argument("-i", "--input", default=None, help="Optional local file to merge with fetched configs")
+    scan.add_argument("--fetch-out", default="fetched_public.txt", help="Output for all fetched configs")
+    scan.add_argument("--out", default="live_with_delay.txt", help="Output for live configs after delay test")
+    scan.add_argument("--singbox", default="sing-box", help="sing-box binary path")
+    scan.add_argument("--parallel", type=int, default=3, help="Parallel delay tests (default: 3)")
+    scan.add_argument("--timeout", type=int, default=15, help="Delay test timeout in seconds")
+    scan.add_argument("--startup-wait", type=float, default=2.0, help="sing-box startup wait")
+    scan.add_argument("--probe", default=DEFAULT_PROBE, help="Probe URL")
+
     delay = subparsers.add_parser("delay", help="Test config latency with sing-box (CLI)")
     delay.add_argument("-i", "--input", required=True, help="Configs file")
     delay.add_argument("--singbox", default="sing-box", help="sing-box binary path")
@@ -1436,6 +1727,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def async_main(args: argparse.Namespace) -> int:
+    if args.command == "fetch":
+        return await run_fetch(args)
+    if args.command == "scan":
+        return await run_scan(args)
     if args.command == "iran":
         return await run_iran_checker(args)
     if args.command == "delay":
