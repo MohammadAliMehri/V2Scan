@@ -32,7 +32,7 @@ echo -e "  Package manager: ${W}${PM}${N}"
 
 # ── Step 1: Python ──
 echo ""
-echo -e "${B}[1/5] Checking Python...${N}"
+echo -e "${B}[1/4] Checking Python...${N}"
 PYTHON=""
 for cmd in python3 python; do
     if command -v "$cmd" &>/dev/null; then
@@ -58,7 +58,7 @@ fi
 
 # ── Step 2: pip ──
 echo ""
-echo -e "${B}[2/5] Checking pip...${N}"
+echo -e "${B}[2/4] Checking pip...${N}"
 if ! "$PYTHON" -m pip --version &>/dev/null; then
     echo -e "  ${Y}[!]${N} pip not found, installing..."
     case "$PM" in
@@ -72,24 +72,14 @@ echo -e "  ${G}[OK]${N} pip is available"
 
 # ── Step 3: Python packages ──
 echo ""
-echo -e "${B}[3/5] Installing Python packages...${N}"
+echo -e "${B}[3/4] Installing Python packages...${N}"
 "$PYTHON" -m pip install --upgrade pip --quiet 2>/dev/null || true
-"$PYTHON" -m pip install "rich" "httpx[http2]" --quiet
-echo -e "  ${G}[OK]${N} Python packages installed (rich, httpx)"
+"$PYTHON" -m pip install -r "$(dirname "$0")/requirements.txt" --quiet
+echo -e "  ${G}[OK]${N} Python packages installed (rich, httpx[socks,http2], fastapi, uvicorn, qrcode)"
 
-# ── Step 4: curl ──
+# ── Step 4: sing-box dependency note ──
 echo ""
-echo -e "${B}[4/5] Checking curl...${N}"
-if command -v curl &>/dev/null; then
-    echo -e "  ${G}[OK]${N} curl is available ($(curl --version | head -1 | cut -d' ' -f1-3))"
-else
-    echo -e "  ${Y}[!]${N} curl not found. Installing..."
-    $INSTALL_CMD curl 2>/dev/null || echo "  Install curl manually for delay testing"
-fi
-
-# ── Step 5: sing-box ──
-echo ""
-echo -e "${B}[5/5] Checking sing-box...${N}"
+echo -e "${B}[4/4] Checking sing-box...${N}"
 if command -v sing-box &>/dev/null; then
     SB_VER=$(sing-box version 2>&1 | head -1)
     echo -e "  ${G}[OK]${N} sing-box found: $SB_VER"
@@ -107,7 +97,7 @@ else
     esac
     echo ""
     echo -e "  ${W}Option C${N} - Pass path manually:"
-    echo "    python v2_all_in_one.py delay -i configs.txt --singbox /path/to/sing-box"
+    echo "    python main.py delay -i configs.txt --singbox /path/to/sing-box"
     echo ""
     echo -e "  The ${W}fetch${N} command works without sing-box."
 fi
@@ -119,10 +109,10 @@ echo -e "${G}  Setup complete!${N}"
 echo -e "${C}============================================================${N}"
 echo ""
 echo -e "  Quick start:"
-echo -e "    ${W}$PYTHON v2_all_in_one.py fetch${N}               # Fetch free configs from GitHub"
-echo -e "    ${W}$PYTHON v2_all_in_one.py scan --parallel 5${N}    # Fetch + test all"
-echo -e "    ${W}$PYTHON v2_all_in_one.py web --port 8686${N}      # Launch web UI"
-echo -e "    ${W}$PYTHON v2_all_in_one.py delay -i configs.txt${N} # Test existing configs"
+echo -e "    ${W}$PYTHON main.py fetch${N}               # Fetch free configs from GitHub"
+echo -e "    ${W}$PYTHON main.py scan --parallel 5${N}    # Fetch + test all"
+echo -e "    ${W}$PYTHON main.py web --port 8686${N}      # Launch web UI"
+echo -e "    ${W}$PYTHON main.py delay -i configs.txt${N} # Test existing configs"
 echo ""
 echo -e "  Open ${C}http://127.0.0.1:8686${N} for the web dashboard."
 echo ""

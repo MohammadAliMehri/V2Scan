@@ -41,8 +41,8 @@ echo  [OK] pip is available
 echo.
 echo [3/4] Installing Python packages...
 python -m pip install --upgrade pip >nul 2>&1
-python -m pip install rich httpx[http2]
-echo  [OK] Python packages installed (rich, httpx)
+python -m pip install -r "%~dp0requirements.txt"
+echo  [OK] Python packages installed (rich, httpx[socks,http2], fastapi, uvicorn, qrcode)
 
 :: ── Check / Install sing-box ──
 echo.
@@ -62,18 +62,10 @@ if %errorlevel% equ 0 (
     echo    Extract sing-box.exe and add it to your PATH.
     echo.
     echo  Option C - Already have it? Pass the path:
-    echo    python v2_all_in_one.py delay -i configs.txt --singbox C:\path\to\sing-box.exe
+    echo    python main.py delay -i configs.txt --singbox C:\path\to\sing-box.exe
     echo.
     echo  The 'fetch' command works without sing-box.
     echo.
-
-:: ── Check curl ──
-where curl >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  [!] curl not found. It comes with Windows 10 1803+.
-    echo      If using older Windows, install: scoop install curl
-) else (
-    echo  [OK] curl is available
 )
 
 :: ── Done ──
@@ -83,10 +75,10 @@ echo  Setup complete!
 echo  ============================================================
 echo.
 echo  Quick start:
-echo    python v2_all_in_one.py fetch               # Fetch free configs from GitHub
-echo    python v2_all_in_one.py scan --parallel 5    # Fetch + test all
-echo    python v2_all_in_one.py web --port 8686      # Launch web UI
-echo    python v2_all_in_one.py delay -i configs.txt # Test existing configs
+echo    python main.py fetch               # Fetch free configs from GitHub
+echo    python main.py scan --parallel 5    # Fetch + test all
+echo    python main.py web --port 8686      # Launch web UI
+echo    python main.py delay -i configs.txt # Test existing configs
 echo.
 echo  Open http://127.0.0.1:8686 for the web dashboard.
 echo.

@@ -8,8 +8,10 @@ sing-box-*/
 # Generated configs
 *.txt
 !README.md
+!requirements.txt
 
 # Python
+.venv/
 __pycache__/
 *.pyc
 *.pyo
